@@ -1,0 +1,121 @@
+name: "BCRA — Procesar mes"
+
+on:
+  workflow_dispatch:
+    inputs:
+      mes:
+        description: "Mes a procesar (ej: Enero 2026)"
+        required: true
+        type: string
+      forzar:
+        description: "Forzar reprocesamiento aunque ya esté en estado.json"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  procesar:
+    name: "Procesar ${{ inputs.mes }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    permissions:
+      contents: write
+
+    steps:
+
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependencias del sistema
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full
+
+      - name: Instalar dependencias Python
+        run: |
+          pip install -q \
+            playwright \
+            requests \
+            pandas \
+            openpyxl \
+            pdfplumber \
+            nest_asyncio \
+            google-api-python-client \
+            google-auth
+          playwright install --with-deps chromium
+
+      - name: Descargar datos históricos de Google Drive
+        env:
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          GDRIVE_FOLDER_ID:            ${{ secrets.GDRIVE_FOLDER_ID }}
+          WORKDIR: /tmp/bcra_auto
+        run: |
+          cd scripts
+          python - <<'EOF'
+          import os, sys
+          sys.path.insert(0, '.')
+          from drive import descargar_carpetas_mis
+          from pathlib import Path
+          descargar_carpetas_mis(Path(os.environ['WORKDIR']))
+          EOF
+
+      - name: Descargar y procesar mes
+        id: procesar
+        env:
+          MES_OBJETIVO:                ${{ inputs.mes }}
+          FORZAR:                      ${{ inputs.forzar }}
+          WORKDIR:                     /tmp/bcra_auto
+          GMAIL_USER:                  ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASS:              ${{ secrets.GMAIL_APP_PASS }}
+          ALERT_EMAILS:                ${{ secrets.ALERT_EMAILS }}
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          GDRIVE_FOLDER_ID:            ${{ secrets.GDRIVE_FOLDER_ID }}
+          GITHUB_REPO_URL:             "https://github.com/${{ github.repository }}/actions/workflows/procesar_mes.yml"
+        run: |
+          cd scripts
+
+          if [ "$FORZAR" = "true" ]; then
+            python - <<'PYEOF'
+          import sys; sys.path.insert(0, '.')
+          from estado import resetear_intentos
+          resetear_intentos()
+          print("⚠️  Forzar=true: contador de intentos reseteado.")
+          PYEOF
+          fi
+
+          python procesador.py
+
+      - name: Commit estado.json actualizado
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add estado.json
+          git diff --cached --quiet || \
+            git commit -m "chore: procesar ${{ inputs.mes }} [skip ci]" && \
+            git push
+
+      - name: Resumen del job
+        if: always()
+        run: |
+          echo "## Resultado del procesamiento" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Mes procesado | ${{ inputs.mes }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Estado | ${{ steps.procesar.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Ejecutado por | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Fecha | $(date -u '+%Y-%m-%d %H:%M UTC') |" >> $GITHUB_STEP_SUMMARY
+          

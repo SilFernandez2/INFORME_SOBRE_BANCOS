@@ -1,0 +1,18 @@
+# Datos descargados
+*.7z
+*.zip
+bcra_auto/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.env
+
+# Notebooks (quedan en Colab, no en el repo)
+*.ipynb
+
+# Credenciales locales
+service_account.json
+credentials.json

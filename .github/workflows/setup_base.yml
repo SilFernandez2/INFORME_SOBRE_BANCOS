@@ -1,0 +1,166 @@
+name: "BCRA — Setup base histórica (UNA VEZ)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      meses_lista:
+        description: |
+          Lista de meses separados por coma.
+          Dejar vacío para procesar todos desde Dic 2024.
+          Ejemplo: "Diciembre 2024,Enero 2025,Febrero 2025"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  setup_base:
+    name: "Construir base histórica"
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    permissions:
+      contents: write
+
+    steps:
+
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependencias del sistema
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full
+
+      - name: Instalar dependencias Python
+        run: |
+          pip install -q \
+            playwright \
+            requests \
+            pandas \
+            openpyxl \
+            pdfplumber \
+            nest_asyncio \
+            google-api-python-client \
+            google-auth
+          playwright install --with-deps chromium
+
+      - name: Ejecutar setup base
+        env:
+          MESES_LISTA:                 ${{ inputs.meses_lista }}
+          WORKDIR:                     /tmp/bcra_auto
+          GMAIL_USER:                  ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASS:              ${{ secrets.GMAIL_APP_PASS }}
+          ALERT_EMAILS:                ${{ secrets.ALERT_EMAILS }}
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          GDRIVE_FOLDER_ID:            ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: |
+          cd scripts
+          python - <<'EOF'
+          import os, sys, asyncio
+          sys.path.insert(0, '.')
+          from pathlib import Path
+          from scraper import find_latest_month_with_files, _get_month_selector, _get_all_options, _safe_select, _get_links_on_page
+          from utils import download_file, extract_with_7z
+          from procesamiento import (
+              procesar_tec_cont, procesar_info_hist,
+              generar_tabla_inf_adi, generar_tabla_info_sistema,
+              normalizar_balres,
+          )
+          from drive import subir_carpeta_mes, subir_tablas_finales
+          from estado import marcar_mes_procesado
+          from playwright.async_api import async_playwright
+          import nest_asyncio
+          nest_asyncio.apply()
+
+          WORKDIR  = Path(os.environ.get("WORKDIR", "/tmp/bcra_auto"))
+          BCRA_URL = "https://www.bcra.gob.ar/informacion-sobre-entidades-financieras/"
+          WORKDIR.mkdir(parents=True, exist_ok=True)
+
+          async def get_all_months_links():
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch(headless=True)
+                  page    = await browser.new_page()
+                  await page.goto(BCRA_URL, wait_until="networkidle")
+                  sel     = await _get_month_selector(page)
+                  options = await _get_all_options(page)
+                  resultado = {}
+                  for opt in options:
+                      await _safe_select(page, sel, opt["value"])
+                      _, link_7z = await _get_links_on_page(page)
+                      if link_7z:
+                          resultado[opt["text"]] = link_7z
+                  await browser.close()
+                  return resultado
+
+          meses_env = os.environ.get("MESES_LISTA", "").strip()
+          filtro    = [m.strip() for m in meses_env.split(",") if m.strip()] if meses_env else None
+
+          print("Obteniendo lista de meses del BCRA...")
+          todos = asyncio.run(get_all_months_links())
+          print(f"Meses disponibles: {list(todos.keys())}")
+
+          if filtro:
+              meses_a_procesar = [(t, l) for t, l in todos.items()
+                                  if any(f.lower() in t.lower() for f in filtro)]
+          else:
+              meses_a_procesar = [(t, l) for t, l in todos.items()
+                                  if "2024" in t or "2025" in t or "2026" in t]
+
+          meses_a_procesar = list(reversed(meses_a_procesar))
+          print(f"Meses a procesar: {[m for m, _ in meses_a_procesar]}")
+
+          errores = []
+          for mes_texto, link_7z in meses_a_procesar:
+              print(f"\n{'='*50}")
+              print(f"Procesando: {mes_texto}")
+              safe_name = mes_texto.replace(" ", "_")
+              month_dir = WORKDIR / safe_name
+              if (month_dir / "Tec_Cont_csv").exists():
+                  print("  ✅ Ya procesado, salteando.")
+                  continue
+              month_dir.mkdir(parents=True, exist_ok=True)
+              try:
+                  archive     = download_file(link_7z, month_dir)
+                  extract_dir = month_dir / "extract"
+                  extract_with_7z(archive, extract_dir)
+                  archive.unlink()
+                  procesar_tec_cont(extract_dir, month_dir)
+                  procesar_info_hist(extract_dir, month_dir)
+                  subir_carpeta_mes(month_dir, mes_texto)
+                  marcar_mes_procesado(mes_texto)
+                  print(f"  ✅ {mes_texto} completado.")
+              except Exception as e:
+                  print(f"  ❌ Error en {mes_texto}: {e}")
+                  errores.append((mes_texto, str(e)))
+
+          print("\n📊 Generando tablas históricas...")
+          generar_tabla_inf_adi(WORKDIR)
+          generar_tabla_info_sistema(WORKDIR)
+          normalizar_balres(WORKDIR)
+          subir_tablas_finales(WORKDIR)
+
+          print(f"\n{'='*50}")
+          print(f"Setup completo. Errores: {len(errores)}")
+          for mes, err in errores:
+              print(f"  - {mes}: {err}")
+          if errores:
+              sys.exit(1)
+          EOF
+
+      - name: Commit estado.json final
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add estado.json
+          git diff --cached --quiet || \
+            git commit -m "chore: setup base histórica completa [skip ci]" && \
+            git push

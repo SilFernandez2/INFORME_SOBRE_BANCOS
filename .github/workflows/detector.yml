@@ -1,0 +1,71 @@
+name: "BCRA — Detectar nuevo mes"
+
+on:
+  # Lun a Vie, 11:00 UTC = 08:00 Argentina (UTC-3)
+  # El script verifica internamente que el día esté entre 1 y 15
+  schedule:
+    - cron: "0 11 1-15 * 1-5"
+
+  # Permite dispararlo manualmente desde GitHub
+  workflow_dispatch:
+
+jobs:
+  detectar:
+    name: "Detectar nuevo .7z en BCRA"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: write
+
+    outputs:
+      nuevo_mes_detectado: ${{ steps.detector.outputs.nuevo_mes_detectado }}
+      nuevo_mes:           ${{ steps.detector.outputs.nuevo_mes }}
+      link_7z:             ${{ steps.detector.outputs.link_7z }}
+
+    steps:
+
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependencias del sistema
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full
+
+      - name: Instalar dependencias Python
+        run: |
+          pip install -q \
+            playwright \
+            requests \
+            pandas \
+            nest_asyncio
+          playwright install --with-deps chromium
+
+      - name: Ejecutar detector
+        id: detector
+        env:
+          GMAIL_USER:      ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASS:  ${{ secrets.GMAIL_APP_PASS }}
+          ALERT_EMAILS:    ${{ secrets.ALERT_EMAILS }}
+          GITHUB_REPO_URL: "https://github.com/${{ github.repository }}/actions/workflows/procesar_mes.yml"
+        run: |
+          cd scripts
+          python detector.py
+
+      - name: Commit estado.json si hay cambios
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add estado.json
+          git diff --cached --quiet || git commit -m "chore: actualizar estado.json [skip ci]"
+          git push
