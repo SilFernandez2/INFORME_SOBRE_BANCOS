@@ -1,6 +1,19 @@
 {
-  "ultimo_mes_procesado": null,
-  "meses_procesados": [],
+  "ultimo_mes_procesado": "Noviembre 2025",
+  "meses_procesados": [
+    "Diciembre 2024",
+    "Enero 2025",
+    "Febrero 2025",
+    "Marzo 2025",
+    "Abril 2025",
+    "Mayo 2025",
+    "Junio 2025",
+    "Julio 2025",
+    "Agosto 2025",
+    "Septiembre 2025",
+    "Octubre 2025",
+    "Noviembre 2025"
+  ],
   "intentos_fallidos": 0,
   "ultimo_error": []
 }
