@@ -4,7 +4,7 @@ on:
   # Lun a Vie, 11:00 UTC = 08:00 Argentina (UTC-3)
   # El script verifica internamente que el día esté entre 1 y 15
   schedule:
-    - cron: "0 11 1-15 * 1-5"
+    - cron: "0 11 1-20 * 1-5"
 
   # Permite dispararlo manualmente desde GitHub
   workflow_dispatch:
