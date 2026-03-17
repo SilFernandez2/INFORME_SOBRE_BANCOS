@@ -27,7 +27,7 @@ from notificador import enviar_alerta_nuevo_mes
 # ---------------------------------------------------------------------------
 
 DIA_INICIO = 1
-DIA_FIN    = 15
+DIA_FIN    = 20
 
 REPO_URL = os.environ.get(
     "GITHUB_REPO_URL",
