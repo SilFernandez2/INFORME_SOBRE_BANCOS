@@ -1,5 +1,8 @@
 {
-  "ultimo_mes_procesado": "Noviembre 2025",
+  "ultimo_mes_procesado": "Diciembre 2025",
+  "fecha_procesamiento": "2026-03-20",
+  "intentos_fallidos": 0,
+  "ultimo_error": [],
   "meses_procesados": [
     "Diciembre 2024",
     "Enero 2025",
@@ -12,8 +15,7 @@
     "Agosto 2025",
     "Septiembre 2025",
     "Octubre 2025",
-    "Noviembre 2025"
-  ],
-  "intentos_fallidos": 0,
-  "ultimo_error": []
+    "Noviembre 2025",
+    "Diciembre 2025"
+  ]
 }
