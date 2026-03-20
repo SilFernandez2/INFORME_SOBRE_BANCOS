@@ -190,3 +190,13 @@ def descargar_carpetas_mis(destino_base: Path) -> None:
     print(f"\n📥 Descargando datos históricos de Drive → {destino_base}...")
     _descargar_recursivo(bcra_id, destino_base)
     print("✅ Descarga completa.")
+    
+def get_gdrive_base() -> Path:
+    """Descarga la estructura de Drive al runner y devuelve la Path."""
+    import os
+    workdir     = Path(os.environ.get("WORKDIR", "/tmp/bcra_auto"))
+    gdrive_base = workdir / "gdrive_mirror"
+    if not gdrive_base.exists():
+        print("   📥 Descargando estructura de Drive al runner...")
+        descargar_carpetas_mis(gdrive_base)
+    return gdrive_base
