@@ -335,3 +335,226 @@ def normalizar_balres(
 
     print(f"   ✅ balres_corregido CSV:   {total_csv} archivos")
     print(f"   ✅ balres_corregido Excel: {total_xlsx} archivos (listos para Power BI)")
+# ===========================================================================
+# ACTUALIZACIÓN DE TABLAS HISTÓRICAS DESDE GOOGLE DRIVE
+# ===========================================================================
+
+def _normalizar_drive(x) -> str:
+    if pd.isna(x):
+        return ""
+    return str(x).replace("\ufeff", "").strip().strip('"').strip()
+
+
+def actualizar_tablas_desde_drive(gdrive_base: Path) -> None:
+    """
+    Regenera las 4 tablas históricas leyendo desde la carpeta de Drive
+    descargada en el runner. Guarda en gdrive_base/tablas_historicas/.
+    """
+    tablas_dir = gdrive_base / "tablas_historicas"
+    tablas_dir.mkdir(parents=True, exist_ok=True)
+
+    meses_excluir = {
+        "tablas_historicas", "Info_adi_sistema_excel",
+        "Info_sistema_hist", "estado.json"
+    }
+    meses = sorted([
+        p for p in gdrive_base.iterdir()
+        if p.is_dir() and p.name not in meses_excluir
+    ])
+    print(f"   Meses en Drive: {[m.name for m in meses]}")
+
+    print("   📊 Regenerando inf_adi_cantidad_cuentas_stock...")
+    _actualizar_inf_adi_drive(meses, tablas_dir)
+
+    print("   📊 Regenerando info_sistema_hist...")
+    _actualizar_info_sistema_drive(meses, tablas_dir)
+
+    print("   📊 Regenerando esd_bancos_hist y esd_sistema_hist...")
+    _actualizar_esd_drive(meses, tablas_dir)
+
+    print("   ✅ 4 tablas actualizadas en Drive/tablas_historicas/")
+
+
+def _actualizar_inf_adi_drive(meses: list, tablas_dir: Path) -> None:
+    CODIGO    = "400100001000"
+    CATEGORIA = "Cantidad de Cuentas"
+    filas     = []
+
+    for mes_dir in meses:
+        inf_adi_dir = mes_dir / "Tec_Cont_csv" / "inf_adi"
+        if not inf_adi_dir.exists():
+            continue
+        for archivo in sorted([p for p in inf_adi_dir.glob("*.csv") if p.stem.isdigit()]):
+            try:
+                df = pd.read_csv(archivo, sep=";", header=None, dtype=str,
+                                 encoding="utf-8-sig", engine="python")
+                if df.shape[1] < 6:
+                    continue
+                col1 = df.iloc[:,0].map(_normalizar_drive)
+                col2 = df.iloc[:,1].map(_normalizar_drive)
+                col3 = df.iloc[:,2].map(_normalizar_drive)
+                col4 = df.iloc[:,3].map(_normalizar_drive)
+                col5 = df.iloc[:,4].map(_normalizar_drive)
+                mask = (col4 == CODIGO) & (col5 == CATEGORIA)
+                if mask.any():
+                    temp = pd.DataFrame({
+                        "mes_archivo":    mes_dir.name,
+                        "cod_entidad":    col1[mask],
+                        "entidad":        col2[mask],
+                        "periodo":        col3[mask],
+                        "codigo":         col4[mask],
+                        "categoria":      col5[mask],
+                        "stock_fecha":    df.iloc[:,-1].map(_normalizar_drive)[mask],
+                        "valor_col_-2":   df.iloc[:,-2].map(_normalizar_drive)[mask],
+                        "valor_col_-3":   df.iloc[:,-3].map(_normalizar_drive)[mask],
+                        "archivo_fuente": archivo.name,
+                        "reporta":        "Si"
+                    })
+                    filas.append(temp)
+                else:
+                    primera = df.iloc[0]
+                    filas.append(pd.DataFrame([{
+                        "mes_archivo":    mes_dir.name,
+                        "cod_entidad":    _normalizar_drive(primera[0]),
+                        "entidad":        _normalizar_drive(primera[1]),
+                        "periodo":        _normalizar_drive(primera[2]),
+                        "codigo":         CODIGO,
+                        "categoria":      CATEGORIA,
+                        "stock_fecha":    "0",
+                        "valor_col_-2":   "0",
+                        "valor_col_-3":   "0",
+                        "archivo_fuente": archivo.name,
+                        "reporta":        "No"
+                    }]))
+            except Exception as e:
+                print(f"      ⚠️  {archivo.name}: {e}")
+
+    if not filas:
+        print("      ⚠️  No se encontraron datos inf_adi")
+        return
+
+    resultado = pd.concat(filas, ignore_index=True)
+    resultado["cod_entidad"]   = pd.to_numeric(resultado["cod_entidad"],  errors="coerce").astype("Int64")
+    resultado["periodo"]       = pd.to_numeric(resultado["periodo"],      errors="coerce").astype("Int64")
+    resultado["stock_fecha"]   = pd.to_numeric(resultado["stock_fecha"],  errors="coerce")
+    resultado["valor_col_-2"]  = pd.to_numeric(resultado["valor_col_-2"], errors="coerce")
+    resultado["fecha_periodo"] = pd.to_datetime(
+        resultado["periodo"].astype(str), format="%Y%m", errors="coerce"
+    )
+    resultado["stock_original"]              = resultado["stock_fecha"]
+    resultado["imputado_desde_mes_siguiente"] = False
+    lookup = resultado.set_index(["cod_entidad", "fecha_periodo"])
+
+    for idx, row in resultado.iterrows():
+        if pd.isna(row["stock_fecha"]) or row["stock_fecha"] == 0:
+            try:
+                sig = lookup.loc[(row["cod_entidad"], row["fecha_periodo"] + DateOffset(months=1))]
+                if isinstance(sig, pd.DataFrame):
+                    sig = sig.iloc[0]
+                if pd.notna(sig["stock_fecha"]) and pd.notna(sig["valor_col_-2"]):
+                    if sig["stock_fecha"] == sig["valor_col_-2"]:
+                        resultado.at[idx, "stock_fecha"] = sig["valor_col_-2"]
+                        resultado.at[idx, "imputado_desde_mes_siguiente"] = True
+            except KeyError:
+                pass
+
+    resultado["stock_fecha"] = resultado["stock_fecha"].fillna(0).astype("int64")
+    resultado.to_csv(tablas_dir / "inf_adi_cantidad_cuentas_stock.csv",
+                     index=False, encoding="utf-8-sig")
+    resultado.to_excel(tablas_dir / "inf_adi_cantidad_cuentas_stock.xlsx", index=False)
+    print(f"      ✅ inf_adi: {len(resultado)} filas, {resultado['mes_archivo'].nunique()} meses")
+
+
+def _actualizar_info_sistema_drive(meses: list, tablas_dir: Path) -> None:
+    ARCHIVOS_AA = {"AA000.txt", "AA100.txt", "AA910.txt"}
+    CATEGORIA   = "Cantidad de Cuentas"
+    dfs_hist    = []
+
+    for mes_dir in meses:
+        candidatos = (list(mes_dir.rglob("Entfin/Tec_Cont/inf_adi")) +
+                      list(mes_dir.rglob("Entfin/Tec_Cont/info_adi")))
+        if not candidatos:
+            continue
+        info_adi_dir = candidatos[0]
+        for txt_file in sorted(Path(info_adi_dir).glob("*.txt")):
+            if txt_file.name not in ARCHIVOS_AA:
+                continue
+            try:
+                enc  = detect_encoding(txt_file)
+                rows = []
+                with open(txt_file, "r", encoding=enc, errors="replace") as f:
+                    for line in f:
+                        rows.append(line.rstrip("\n\r").split("\t"))
+                if not rows:
+                    continue
+                maxlen = max(len(r) for r in rows)
+                rows   = [r + [""] * (maxlen - len(r)) for r in rows]
+                df     = pd.DataFrame(rows)
+                df     = df.apply(lambda col: col.map(
+                    lambda x: str(x).replace("\ufeff","").strip().strip('"') if pd.notna(x) else ""
+                ))
+                if df.shape[1] < 10:
+                    continue
+                df_f = df[df[4].astype(str).str.strip().eq(CATEGORIA)].copy()
+                if df_f.empty:
+                    continue
+                df_s = df_f[[0,1,2,3,4,9]].copy()
+                df_s.insert(0, "mes", mes_dir.name)
+                df_s.insert(1, "archivo", txt_file.name)
+                df_s.columns = ["mes","archivo","col_1","col_2","col_3","col_4","categoria","valor_col10"]
+                df_s["valor_col10"] = pd.to_numeric(df_s["valor_col10"], errors="coerce")
+                dfs_hist.append(df_s)
+            except Exception as e:
+                print(f"      ⚠️  {txt_file.name}: {e}")
+
+    if dfs_hist:
+        hist = pd.concat(dfs_hist, ignore_index=True)
+        hist.to_csv(tablas_dir / "info_sistema_hist.csv",  index=False, encoding="utf-8-sig")
+        hist.to_excel(tablas_dir / "info_sistema_hist.xlsx", index=False)
+        print(f"      ✅ info_sistema_hist: {len(hist)} filas")
+
+
+def _actualizar_esd_drive(meses: list, tablas_dir: Path) -> None:
+    ARCHIVOS_AA  = {"AA000.csv", "AA110.csv", "AA910.csv"}
+    filas_bancos = []
+    filas_sist   = []
+
+    for mes_dir in meses:
+        esd_dir = mes_dir / "Tec_Cont_csv" / "esd"
+        if not esd_dir.exists():
+            continue
+        for archivo in sorted(esd_dir.glob("*.csv")):
+            try:
+                df = pd.read_csv(archivo, sep=";", header=None, dtype=str,
+                                 encoding="utf-8-sig", engine="python")
+                if df.empty or df.shape[1] < 6:
+                    continue
+                df = df.apply(lambda col: col.map(_normalizar_drive))
+                df.insert(0, "mes_archivo", mes_dir.name)
+                ncols     = df.shape[1]
+                cols_base = ["mes_archivo","cod_entidad","entidad","periodo",
+                             "cod_indicador","descripcion"]
+                n_extra   = ncols - len(cols_base)
+                if n_extra == 5:
+                    cols_valor = ["dic_23","dic_24","mes_-2","mes_-1","ultimo_mes"]
+                elif n_extra == 6:
+                    cols_valor = ["dic_23","dic_24","mes_-2","mes_-1","ultimo_mes","tipo_np"]
+                else:
+                    cols_valor = [f"col_{i}" for i in range(n_extra)]
+                df.columns = cols_base + cols_valor
+                if archivo.name in ARCHIVOS_AA:
+                    filas_sist.append(df)
+                elif archivo.stem.isdigit():
+                    filas_bancos.append(df)
+            except Exception as e:
+                print(f"      ⚠️  {archivo.name}: {e}")
+
+    for filas, nombre in [(filas_bancos, "esd_bancos_hist"),
+                          (filas_sist,   "esd_sistema_hist")]:
+        if filas:
+            df_out = pd.concat(filas, ignore_index=True)
+            for col in ["dic_23","dic_24","mes_-2","mes_-1","ultimo_mes"]:
+                if col in df_out.columns:
+                    df_out[col] = pd.to_numeric(df_out[col], errors="coerce")
+            df_out.to_excel(tablas_dir / f"{nombre}.xlsx", index=False)
+            print(f"      ✅ {nombre}: {len(df_out)} filas")

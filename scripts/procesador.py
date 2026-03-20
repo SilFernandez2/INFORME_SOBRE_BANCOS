@@ -181,12 +181,21 @@ def main() -> None:
     except Exception as e:
         print(f"⚠️  Error al subir a Drive: {e}")
         resultado.agregar_advertencia(f"Drive: {e}")
-
-    # ── 7. Actualizar estado.json ───────────────────────────────────────────
+    # ── 7. Actualizar tablas históricas en Drive ────────────────────────────
+    print("\n📊 Actualizando tablas históricas en Drive...")
+    try:
+        from procesamiento import actualizar_tablas_desde_drive
+        from drive import get_gdrive_base
+        gdrive_base = get_gdrive_base()
+        actualizar_tablas_desde_drive(gdrive_base)
+        print("   ✅ Tablas históricas actualizadas.")
+    except Exception as e:
+        print(f"⚠️  No se pudieron actualizar tablas históricas: {e}")
+    # ── 8. Actualizar estado.json ───────────────────────────────────────────
     marcar_mes_procesado(mes_real)
     print(f"\n✅ estado.json actualizado: '{mes_real}' marcado como procesado.")
 
-    # ── 8. Email de éxito ───────────────────────────────────────────────────
+    # ── 9. Email de éxito ───────────────────────────────────────────────────
     resumen = {
         "Mes procesado":      mes_real,
         "Archivos CSV":       len(list((month_dir / "Tec_Cont_csv").rglob("*.csv"))),
